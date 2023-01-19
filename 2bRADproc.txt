@@ -1,0 +1,400 @@
+###### Data processing for A. ele heat stress Nov 2020 2bRAD lib ######
+# this dataset contains 4 putative ramets (1 in heat, 1 in control, 1 out heat, 1 out control) from 12 putative genets + tech reps
+# each 'sample' is a pool of ~12 samples -- 5 pools total
+# will process each run separately and then concatenate before mapping
+
+# run gzip.sh as job to unzip files
+
+##### count number of reads for each samples and quality using fastqc and multiqc #####
+#first, count number of reads in each sequence file and record
+countreads.pl > numRawReads.txt
+
+#write a little bash script to iterate fastqc over all files
+# make new output direct for fastqc
+mkdir fastqc_out
+
+# copy fastqc.sh into directory with reads
+# modify the output directory to /scratch1/mruggeri/AeleHSnov2020/run1/fastqc_out OR run2
+
+sbatch -J fastqc fastqc.sh #run this in run1 directory
+
+#run multiqc to aggregate fastqc data
+#needed to install multiqc locally
+module load python
+pip install multiqc
+#run multiqc as job or doesn't work -- modify multiqc.sh with correct path
+#module load multiqc 
+#multiqc /scratch1/mruggeri/AeleHSnov2020/run1/fastqc_out # or run 2
+sbatch -J multiqc multiqc.sh
+
+####### concatenate reads across lanes (i.e. for each pool of samples) #######
+# first make list of IDs
+ls -1 *.fastq | awk -F '_' '{print $1 "_" $2}' | sort | uniq > ID
+
+#then, print list of job commands
+for i in `cat ./ID`; do echo cat $i\_*.fastq \> $i\.fastq; done
+# copy list of commands into conc.sh and run as job
+# move all raw files to their own directory
+
+# counted reads by pool
+countreads.pl > reads_by_pool.txt
+
+#### deduplicate reads and separate pools into samples
+for i in `cat ./ID`; do echo trim2bRAD_2barcodes_dedup_N2.pl input=$i.fastq site=\"\.{12}CGA\.{6}TGC\.{12}\|\.{12}GCA\.{6}TCG\.{12}\" adaptor=\"AGATC?\" sampleID=100 deduplicate=1 bc=[ATGC]{4} minBCcount=10000; done 
+# copy list of commands into job script and run
+sbatch -J pool_adap pool_adap.sh
+# will separate out samples and rename them into PoolName_AdaptorSeq.tr0 
+# example Aele_A_AGAC.tr0
+
+# open sftp window
+sftp mruggeri@discovery@usc.edu
+# transfer pool_adapt_to_new_filename.csv to scratch
+put /Users/maria/Desktop/Kenkel_lab/Anthopleura/Nov2020_AeleHeatStress/2bRAD/pool_adap_to_sampleID.csv
+dos2unix pool_adap_to_sampleID.csv # to convert to unix and remove any weird line endings
+
+#now rename all samples using this file
+awk -F ',' '{ print "mv " $1 " " $2 }' pool_adap_to_sampleID.csv
+#copied output into a job script rename.sh and ran
+
+# count reads by sample
+countreads.pl \.tr0 > Nreads_by_sample.txt
+awk -F' ' '{sum += $2} END{print sum}' Nreads_by_sample.txt # to sum reads then divide by 54 samples to get avg
+# 133,697 reads per sample for run1
+# 115,373 reads per sample for run2
+# so ~250,000 reads per sample
+
+# make new ID list to organize samples into their own directories
+ls -1 *.tr0 | awk -F '.' '{print $1}'  > ID
+
+organize2.sh ID
+
+#### now quality filter and adaptor filter ####
+# copy this into proc.sh script
+
+module load gcc
+module load jdk
+
+#quality filter minimum q20 over 100% of the read
+cat $NAME'.tr0' | fastq_quality_filter -q 20 -p 100 > $NAME'.trim'
+
+#adaptor filtering
+bbduk.sh in=$NAME'.trim' ref=/project/ckenkel_26/RefSeqs/adaptors.fasta k=12 stats=stats.txt out=$NAME'.clean'
+
+batch.sh proc.sh ID proc
+# one sample failed during filtering 3-I-3 see error below
+<!-- 
+Invalid maximum heap size: -Xmx-18m
+Error: Could not create the Java Virtual Machine.
+Error: A fatal exception has occurred. Program will exit.
+ -->
+# ran 3-I-3 separately and it worked fine, weird
+
+#### count number of reads passing each filter using counts2.sh
+# change sequence identifier to match your reads
+# commented out mapping perc part bc will concatenate clean reads and then map
+sbatch -J counts counts2.sh
+
+##### now concatenate runs before mapping
+# concatenating across all 3 runs -- old run + new run 1 & 2
+# this is ridiculous but I think it will work
+for i in `cat ./ID`; do echo cat run1/$i/$i\.clean run2/$i/$i\.clean oldrun/clean/$i\.clean \> $i\.cat ; done
+# copied output into job script conc_runs.sh and ran as job
+
+# count up reads and see if these sums match
+countreads.pl \.cat > sum_cat_runs.txt
+
+# make new dir for concatenated files
+# move files and ID list into this dir
+# organize samples into sample specific dirs
+organize2.sh ID
+
+############### MAPPING ###############
+# first concatenate anthopleura and symbiodinium minutum (B1) genomes and index for bowtie2 so samples can competetively map
+# in RefSeqs/AeleGenome dir
+cat AeleGenome.fasta ../Sym_minutumB1/symbB.v1.0.genome.fa > AeleB1catGenome.fasta
+
+#format ref genome
+#create environmental variables for long file paths
+export GENOME_FASTA=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.fasta
+export GENOME_DICT=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.dict #bowtie mapper will create this file
+
+#index genome for bowtie2 mapper to format
+<!-- 
+module load bowtie2
+module load samtools
+module load picard
+
+bowtie2-build $GENOME_FASTA $GENOME_FASTA 
+samtools faidx $GENOME_FASTA
+export GENOME_DICT=export GENOME_DICT=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.dict
+java -jar $PICARD CreateSequenceDictionary R=$GENOME_FASTA  O=$GENOME_DICT
+ -->
+# put in job script bt2.sh and run as job
+sbatch -J bt2 bt2.sh # takes ~10min
+
+######## moving on
+#run mapping script -- had to increase memory a lot, mapped very fast though so probs can cut back to an hour
+#GENOME_FASTA=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.fasta
+#bowtie2 --threads 16 --no-unal --score-min L,16,1 --local -L 16 -x $GENOME_FASTA -U $NAME".cat" -S $NAME"bt2_HostSym.sam"
+batch.sh HostSymMap.sh ID HostSymMap
+
+#get overall alignment rates
+grep 'overall alignment rate' */HostSymMap*.err | sed 's/\/HostSymMap.*.err:/\'$'\t/g' > map_perc.txt
+sed 's/% overall alignment rate//g' map_perc.txt > sample_map_perc.txt
+# alignment rates look good, 70-80% mapping
+# will merge this with sum_cat_sort.txt later
+
+# now count reads mapping to syms
+# look up long contig in header of sam file SN:scaffold_0	LN:1275498
+# moved all sam files mapped to host and sym to their own directory HostSymSam
+mkdir HostSymSam
+mv */*.sam HostSymSam/
+
+# put in job script zoox_count.sh
+#zooxType.pl host="scaffold_0" > zooxCounts.txt 
+
+# now need to separate into host and sym sam files
+# should have renamed sym scaffolds first but nvm -- will use size in heading of sym scaffolds to differentiate
+for i in `cat ./ID`; do echo 'grep -v' '"|size"' $i'bt2_HostSym.sam' \> $i\_host.sam ; done
+# put output into job script hostSam.sh and run
+
+# move host files into their own directories
+ls *.sam > ID
+sed 's/\.sam//g' ID > ID_clean
+organize2.sh ID_clean
+
+#### bam.sh -- convert to bam files ###
+module load gcc
+module load intel
+module load jdk
+module load picard
+module load samtools
+
+# enter your job specific code below this line
+#GENOME_FASTA=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.fasta
+#samtools view -bt $GENOME_FASTA $NAME'.sam' > unsorted.bam && samtools sort -o sorted.bam unsorted.bam && java -Xmx5g -jar $PICARD AddOrReplaceReadGroups INPUT=sorted.bam OUTPUT=$NAME'.bam' RGID=group1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=$NAME && samtools index $NAME'.bam'
+
+batch.sh bam.sh ID_clean bam
+
+
+
+
+
+#########################################
+####### moving on to ANGSD 0.933 ########
+# move bams and bam.bai to own directory
+
+# load in the following mods
+module load htslib
+module load zlib
+module load bzip2
+module load curl
+
+# make list of bam files
+ls *.bam > bam_list
+
+# check coverage
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -maxDepth 540" #set max depth to 10x number of samples
+TODO="-doQsDist 1 -doDepth 1 -doCounts 1 -dumpCounts 2"
+angsd -b bam_list -r scaffold_0 -GL 1 $FILTERS $TODO -P 1 -out dd
+#	-> Total number of sites analyzed: 2114
+#	-> Number of sites retained after filtering: 2113
+
+# summarizing results (using modified script by Matteo Fumagalli)
+module load r
+# downloaded Misha's modified plotQC.R script from github, this seems to give me the right output
+Rscript /project/ckenkel_26/mruggeri/scripts2021/2bRAD/plotQC.R prefix=dd bams=bam_list > qranksAele
+
+# sftp dd.pdf onto computer
+
+# ----- IBS with ANGSD
+
+# F I L T E R S :
+# (ALWAYS record your filter settings and explore different combinations to confirm that results are robust. )
+# Suggested filters :
+# -snp_pval 1e-5 : high confidence that the SNP is not just sequencing error 
+# -minMaf 0.05 : only common SNPs, with allele frequency 0.05 or more.
+# set minInd to 75-80% of total number of samples -- 41 out of 54 samples
+# also adding  filters against very badly non-HWE sites (such as, all calls are heterozygotes => lumped paralog situation) and sites with really bad strand bias:
+# if you expect very highly differentiated populations with nearly fixed alternative alleles, remove '-hwe_pval 1e-5' form FILTERS
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 41 -snp_pval 1e-5 -minMaf 0.05"
+
+# T O   D O : 
+# -GL 1 : samtools likelihood model
+# -doGlf 2 : output beagle format (for admixture)
+# -doGeno 8 : bgenotype likelihoods format for ngsLD
+# -makeMatrix 1 -doIBS 1 -doCov 1 : identity-by-state and covariance matrices based on single-read resampling (robust to variation in coverage across samples)
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+
+# Starting angsd with -P the number of parallel processes. Funny but in many cases angsd runs faster on -P 1
+angsd -b bam_list -GL 1 $FILTERS $TODO -P 1 -out AeleResult
+
+# how many SNPs? 440 after filtering
+
+# scp AeleResult.ibsMat, bams, and bam_list to laptop, use step1_IBS.R to analyze
+
+
+
+# have a weird sample -- 11-O-1
+# going to filter out samples with <20% sites remaining aka 13-O-4 and see whether anything changes
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 41 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+angsd -b bam_clean -GL 1 $FILTERS $TODO -P 1 -out AeleResult2
+# 428 sites retained after filtering
+
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 40 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+angsd -b bam_clean -GL 1 $FILTERS $TODO -P 1 -out AeleResult3
+# 505 sites
+
+# increased minInd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 43 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+angsd -b bam_clean -GL 1 $FILTERS $TODO -P 1 -out AeleResult4
+#393 after filtering
+
+# increase minInd to 100%
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 53 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+angsd -b bam_clean -GL 1 $FILTERS $TODO -P 1 -out AeleResult5
+# 153 sites
+
+
+
+########################################
+######### processing for run 3 #########
+
+# run 3 is preps for just 11 and 13 to verify placement within IBS dend and which clonal groups they belong to
+# there are 2 pools -- one with 12 samples and one with 9
+
+gzip -d *.gz
+countreads.pl > numRawReads.txt
+
+# skip multiqc because Yingqi already did it
+
+####### concatenate reads across lanes (i.e. for each pool of samples) #######
+# first make list of IDs
+ls -1 *.fastq | awk -F '_' '{print $1 "_" $2}' | sort | uniq > ID
+
+#then, print list of job commands
+for i in `cat ./ID`; do echo cat $i\_*.fastq \> $i\.fastq; done
+# run list of commands
+# move all raw files to their own directory
+
+# counted reads by pool
+countreads.pl > reads_by_pool.txt
+
+#### deduplicate reads and separate pools into samples
+for i in `cat ./ID`; do echo trim2bRAD_2barcodes_dedup_N2.pl input=$i.fastq site=\"\.{12}CGA\.{6}TGC\.{12}\|\.{12}GCA\.{6}TCG\.{12}\" adaptor=\"AGATC?\" sampleID=100 deduplicate=1 bc=[ATGC]{4} minBCcount=10000; done 
+# run list of commands
+# will separate out samples and rename them into PoolName_AdaptorSeq.tr0 
+# example MR_1_AGAC.tr0
+
+# not going to rename right now because don't have lab notebook so leave filenames as is during processing
+
+# count reads by sample
+countreads.pl \.tr0 > Nreads_by_sample.txt
+awk -F' ' '{sum += $2} END{print sum}' Nreads_by_sample.txt # to sum reads then divide by 21 samples to get avg
+# about 208,637 reads per sample, similar to total from both runs last time
+
+# make new ID list to organize samples into their own directories
+ls -1 *.tr0 | awk -F '.' '{print $1}'  > ID
+organize2.sh ID
+
+#### now quality filter and adaptor filter ####
+# copy this into proc.sh script
+<!-- 
+module load gcc
+module load jdk
+
+#quality filter minimum q20 over 100% of the read
+cat $NAME'.tr0' | fastq_quality_filter -q 20 -p 100 > $NAME'.trim'
+
+#adaptor filtering
+bbduk.sh in=$NAME'.trim' ref=/project/ckenkel_26/RefSeqs/adaptors.fasta k=12 stats=stats.txt out=$NAME'.clean'
+ -->
+
+batch.sh proc.sh ID proc
+
+###### mapping
+#run mapping script -- had to increase memory a lot, mapped very fast though so probs can cut back to an hour
+#GENOME_FASTA=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.fasta
+#bowtie2 --threads 16 --no-unal --score-min L,16,1 --local -L 16 -x $GENOME_FASTA -U $NAME".clean" -S $NAME"bt2_HostSym.sam"
+batch.sh HostSymMap.sh ID HostSymMap
+
+#get overall alignment rates
+grep 'overall alignment rate' */HostSymMap*.err | sed 's/\/HostSymMap.*.err:/\'$'\t/g' > map_perc.txt
+sed 's/% overall alignment rate//g' map_perc.txt > sample_map_perc.txt
+# alignment rates look good, 67-81% mapping
+
+# now count reads mapping to syms
+# look up long contig in header of sam file SN:scaffold_0	LN:1275498
+# moved all sam files mapped to host and sym to their own directory HostSymSam
+mkdir HostSymSam
+mv */*.sam HostSymSam/
+
+# put in job script zoox_count.sh
+#zooxType.pl host="scaffold_0" > zooxCounts.txt
+sbatch -J zoox zoox_count.sh  
+
+# now need to separate into host and sym sam files
+# should have renamed sym scaffolds first but nvm -- will use size in heading of sym scaffolds to differentiate
+cp ../ID .
+for i in `cat ./ID`; do echo 'grep -v' '"|size"' $i'bt2_HostSym.sam' \> $i\_host.sam ; done
+# put output into job script hostSam.sh and run
+
+# move host files into their own directories
+ls *.sam > ID
+sed 's/\.sam//g' ID > ID_clean
+organize2.sh ID_clean
+
+#### bam.sh -- convert to bam files ###
+<!-- 
+module load picard
+module load samtools
+module load jdk
+
+# enter your job specific code below this line
+#GENOME_FASTA=/project/ckenkel_26/RefSeqs/AeleGenome/AeleB1catGenome.fasta
+#samtools view -bt $GENOME_FASTA $NAME'.sam' > unsorted.bam && samtools sort -o sorted.bam unsorted.bam && java -Xmx5g -jar $PICARD AddOrReplaceReadGroups INPUT=sorted.bam OUTPUT=$NAME'.bam' RGID=group1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=$NAME && samtools index $NAME'.bam'
+ -->
+
+batch.sh bam.sh ID_clean bam
+
+
+# move bams and bam.bai to own directory
+
+# load in the following mods
+module load htslib
+module load zlib
+module load bzip2
+module load curl
+
+# make list of bam files
+ls *.bam > bam_list
+
+# check coverage
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -maxDepth 210" #set max depth to 10x number of samples
+TODO="-doQsDist 1 -doDepth 1 -doCounts 1 -dumpCounts 2"
+angsd -b bam_list -r scaffold_0 -GL 1 $FILTERS $TODO -P 1 -out dd
+#-> Total number of sites analyzed: 2062
+#-> Number of sites retained after filtering: 2058 
+
+# summarizing results (using modified script by Matteo Fumagalli)
+module load r
+# downloaded Misha's modified plotQC.R script from github, this seems to give me the right output
+Rscript /project/ckenkel_26/mruggeri/scripts2021/2bRAD/plotQC.R prefix=dd bams=bam_list > qranksAele
+
+# sftp dd.pdf onto computer
+# looks very similar to last time
+
+#### now angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 16 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+
+# Starting angsd with -P the number of parallel processes. Funny but in many cases angsd runs faster on -P 1
+angsd -b bam_list -GL 1 $FILTERS $TODO -P 1 -out AeleResult
+# 418 sites after filtering
+
+
+

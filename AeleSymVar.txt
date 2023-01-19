@@ -1,0 +1,67 @@
+# download reads onto HPC and concatenate
+
+module load rclone
+rclone config
+name: AeleDrive
+Storage: 13
+client_id:
+client_secret:
+scope: 1
+root_folder_id: 17buTKAJkHgQZFmvng0sHrw52HT1Kzpbn
+service_account_file: 
+Edit advanced config? n
+Use auto config? n
+token = {"access_token":"ya29.A0AVA9y1uVpSDuvAz8oipI5Z89FUVgr4BtdayiFTTJfi8twn9VDLxyUnNjHv1Wxts8neqgdOisiD9s4pT-S9rnpP0ITvAV4MK8ifRfDfPxvMYIRt3mutr1oQMVzMc3kTemfYdR8vS-zpzdcZj1u_Z_EnOh6POuYUNnWUtBVEFTQVRBU0ZRRTY1ZHI4R1V3U3kxTDczVzFwLWhIUTRmdGc0QQ0163","token_type":"Bearer","refresh_token":"1//065krnkn_S8BLCgYIARAAGAYSNgF-L9IrTicwDR5iHENPJgIR_1TzqDQITK5bPxG0UTz12r8lwALPh5blzZVWOSrCsQvPG4Z0QA","expiry":"2022-07-28T12:27:16.86889015-07:00"}
+team_drive = y
+
+rclone copy "AeleDrive:20220615_Kenkel_Maria_MRDOZSymVar-355039864.zip" "run1"
+rclone copy "AeleDrive:20220707_Kenkel_MRDOZSymVar-356968645/20220707_Kenkel_MRDOZSymVar-356968645.zip" "run2"
+
+# unzip files using unzip run1/*.zip and run as job OR run2
+sbatch -J unzip unzip.sh
+
+# move *.gz files into their own folder reads
+# run gzip.sh as job
+# gzip -d Aelerun1/reads/*.gz
+# gzip -d Aelerun2/reads/*.gz
+
+# check that R1 in file name is forward reads across both runs
+# run1 R1 starts with GAATTGCAGAA
+# run1 R2 starts with CGGGTTCACTT
+# run2 R1 starts with GAATTGCAGAA
+# run2 R2 starts with CGGGTTCTCTT
+# so they are the same orientation and can concatenate, yay!
+
+# make ID list
+ls *.fastq > ID
+# now use for loop to print a list of commands
+for i in `cat ./ID`; do echo cat Aelerun1/$i Aelerun2/$i \> catruns/$i ; done > conc.sh
+# then copy job script header into conc.sh and run as job
+
+# count number of forward and reverse reads by sample
+countreads.pl > NreadsRaw.txt
+
+# edit gzip.sh to gzip concatenated files and comment out previous lines
+# sftp gzipped files onto local computer for SymPortal analysis
+
+
+############# SYMPORTAL #############
+# on your local computer, move into symportal framework dir
+cd /Users/maria/Desktop/Kenkel_lab/bioinformatics/SymPortal_framework-0.3.22/
+
+# activate conda env
+conda activate symportal_env
+
+# took several hours to run on my computer (at least 3)
+./main.py --load /Users/maria/Desktop/Kenkel_lab/Anthopleura/Nov2020_AeleHeatStress/ITS2/computational/catruns/ --name AeleSymVar_loading
+
+# find which number dataset
+./main.py --display_data_sets
+# AeleSymVar is 3
+
+# took a while as well (only 1hr maybe less)
+./main.py --analyse 3 --name AeleSymVar_loading
+
+
+
+
