@@ -512,3 +512,113 @@ pairs(emmeans(MixModel,c('Zone','pos')))
 #pairs(emmeans(MixModel,'genet'))
 emmeans(MixModel,c('Zone','treatment'))
 
+##### broad sense heritability #####
+library(MCMCglmm)
+prior1=list(R = list(V = 1, nu = 0.002), G = list(G1 = list(V = 1,nu=0.002)))
+prior2=prior1=list(R = list(V = 1, nu = 0.002), G = list(G1 = list(V = 1,nu=0.002),G2 = list(V = 1,nu=0.002)))
+
+model1=MCMCglmm(MQY ~ treatment*Zone,random=~genet + tank:treatment,data=trait_master,prior=prior2,nitt=50000,thin=20,burnin=10000)
+summary(model1)
+plot(model1)
+vcv=colnames(model1$VCV)
+autocorr.diag(model1$Sol) #for fixed effects
+autocorr.diag(model1$VCV) #for random effects
+mean(model1$VCV[,1]) # Vg
+mean(model1$VCV[,2]+model1$VCV[,3]) # Ve
+
+H1=(model1$VCV[,1])/(model1$VCV[,1]+model1$VCV[,2]+model1$VCV[,3])
+mean(H1)
+HPDinterval(H1) 
+MQYH2=c(mean(H1),HPDinterval(H1))
+
+model2=MCMCglmm(logSymHost ~ treatment*Zone,random=~genet + tank:treatment,data=trait_master,prior=prior2,nitt=50000,thin=20,burnin=10000)
+H2=(model2$VCV[,1])/(model2$VCV[,1]+model2$VCV[,2]+model2$VCV[,3])
+mean(H2)
+HPDinterval(H2) 
+SymToHostH2=c(mean(H2),HPDinterval(H2))
+
+model3=MCMCglmm(Chla_norm ~ treatment*Zone,random=~genet + tank:treatment,data=trait_master,prior=prior2,nitt=50000,thin=20,burnin=10000)
+H3=(model3$VCV[,1])/(model3$VCV[,1]+model3$VCV[,2]+model3$VCV[,3])
+mean(H3)
+HPDinterval(H3) 
+ChlaH2=c(mean(H3),HPDinterval(H3))
+
+#### now weight using reduced model because only initial weight measured
+prior1=list(R = list(V = 1, nu = 0.002), G = list(G1 = list(V = 1,nu=0.002)))
+model4=MCMCglmm(logWeight ~ Zone,random=~genet,data=trait_master,prior=prior1,nitt=50000,thin=20,burnin=10000)
+H4=(model4$VCV[,1])/(model4$VCV[,1]+model4$VCV[,2])
+mean(H4)
+weightH2=c(mean(H4),HPDinterval(H4))
+
+## make df with all traits
+H2all=rbind(MQYH2,SymToHostH2,ChlaH2,weightH2)
+colnames(H2all)=c("mean","lwr","upper")
+H2all=data.frame(H2all)
+H2all$trait=c("MQY","Sym/Host","Chla","weight")
+H2all$trait=factor(H2all$trait,levels=c("MQY","Sym/Host","Chla","weight"))
+write.csv(H2all,'H2alltraits.csv')
+
+ggplot(H2all, aes(x=trait, y=mean)) + 
+  geom_bar(stat="identity",colour="black",size=.3) +
+  geom_errorbar(aes(ymin=lwr, ymax=upper),size=.3,width=.2) +
+  ylim(0,1)+
+  theme_bw(base_size = 20)+
+  labs(y=expression(H^2))+
+  theme(axis.title.x = element_blank()) 
+
+## let's calculate 'bleaching' control-heat for traits and explore their heritability
+#### cannot actually do this because now only one entry per genet
+## this will only work for MQY using the initial vs final for each individual
+
+
+#### let's do broad sense heritability of change in MQY ####
+PAM_master=read.csv('/Users/maria/Desktop/Kenkel_lab/Anthopleura/Nov2020_AeleHeatStress/PAM/PAMexpMaster.csv',row.names = 1)
+initial=PAM_master[PAM_master$Date=='11/20/20',]
+final=PAM_master[PAM_master$Date=='11/30/20',]
+initial$sample_rep==final$sample_rep
+order=initial$sample_rep
+final_order=final[match(order,final$sample_rep),]
+initial$sample_rep==final_order$sample_rep
+
+delMQY=initial$MQY-final_order$MQY
+delMQYdf=as.data.frame(cbind(initial[,13:17],'tank'=initial$tank, delMQY))
+
+delMQYdf$sampleID=gsub(' ','-',delMQYdf$sample_rep)
+# there are two 12-I-3's, remove both
+delMQYdf=delMQYdf[!delMQYdf$sampleID=='12-I-3',]
+order=delMQYdf$sampleID
+trait_order=trait_master[match(order,trait_master$sampleID),]
+delMQYdf$genet=trait_order$genet
+delMQYdf$tank=as.factor(delMQYdf$tank)
+write.csv(delMQYdf,'PAM/delMQY.csv')
+
+prior1=list(R = list(V = 1, nu = 0.002), G = list(G1 = list(V = 1,nu=0.002)))
+prior2=prior1=list(R = list(V = 1, nu = 0.002), G = list(G1 = list(V = 1,nu=0.002),G2 = list(V = 1,nu=0.002)))
+
+m1=MCMCglmm(delMQY ~ treatment*Zone,random=~genet+tank:treatment,data=delMQYdf,prior=prior2,nitt=50000,thin=20,burnin=10000)
+summary(m1)
+plot(m1)
+vcv=colnames(m1$VCV)
+autocorr.diag(m1$Sol) #for fixed effects
+autocorr.diag(m1$VCV) #for random effects
+mean(m1$VCV[,1]) # Vg
+mean(m1$VCV[,2]+m1$VCV[,3]) # Ve
+H=(m1$VCV[,1])/(m1$VCV[,1]+m1$VCV[,2]+m1$VCV[,3]) 
+mean(H)
+HPDinterval(H)
+
+delMQYH2=as.data.frame(cbind(mean(H),HPDinterval(H)))
+colnames(delMQYH2)=c('mean','lwr','upper')
+delMQYH2$trait='MQY_initial - MQY_final'
+
+ggplot(delMQYH2, aes(x=trait,y=mean)) + 
+  geom_bar(stat="identity",
+           colour="black", # Use black outlines,
+           size=.3) +      # Thinner lines
+  geom_errorbar(aes(ymin=lwr, ymax=upper),
+                size=.3,    # Thinner lines
+                width=.2) +
+  theme_bw(base_size = 20)+
+  labs(y=expression(H^2),x=expression(MQY_initial))+
+  theme(axis.title.x = element_blank())+
+  ylim(0,1)
