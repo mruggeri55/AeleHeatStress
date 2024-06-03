@@ -1,5 +1,59 @@
 setwd('/Users/maria/Desktop/Kenkel_lab/Anthopleura/Nov2020_AeleHeatStress/')
-trait_master=read.csv('trait_master.csv',row.names = 1)
+
+SymToHost=read.csv('qPCR/qPCR_master.csv',row.names = 1)
+SymToHostSub=subset(SymToHost,select=c('Sample','fold_change'))
+chl=read.csv("physiology/analysis/AHS_chl_quant.csv")
+chl=subset(chl,select=c('sampleID','Chla_norm','tot_chl_norm'))
+PAM=read.csv('PAM/PAMexpMaster.csv',row.names=1)
+PAM$sample_rep=paste(PAM$sample,PAM$tank,sep = '-')
+PAM_EndPt=PAM[PAM$Date == '11/30/20',]
+PAM_EndPtSub=subset(PAM_EndPt,select=c('sample_rep','MQY'))
+size=read.csv('physiology/size.csv')
+colnames(size)=c('sampleID','weight')
+
+meta=subset(PAM_EndPt,select=c('sample_rep','genotype','pos','Zone','treatment','tank'))
+colnames(meta)[2]='agg'
+meta$agg=factor(meta$agg,levels=c('1','2','3','4','5','11','7','8','9','10','12','13'))
+agg=c('1','2','3','4','5','11','7','8','9','10','12','13')
+genet=c('G1','G1','G1','G4','G5','G10','G1','G1','G9','G10','G12','G13')
+agg_genet=as.data.frame(cbind(agg,genet))
+meta2=merge(meta,agg_genet,by='agg')
+meta2$genet=factor(meta2$genet,levels=c('G4','G5','G1','G10','G9','G12','G13'))
+meta=meta2
+colnames(meta)[2]='sampleID'
+
+TideHeight=read.csv('TidalHeight_7Nov2022.csv')
+colnames(TideHeight)[1]='agg'
+#TideHeightMid=TideHeight[,c(2,4)]
+meta2=merge(meta,TideHeight, by='agg')
+meta=meta2
+#write.csv(meta,'meta.csv')
+
+colnames(SymToHostSub)=c('sampleID','SymHostRatio')
+colnames(PAM_EndPtSub)[1]='sampleID'
+
+library(tidyverse)
+#put all data frames into list
+df_list <- list(meta,PAM_EndPtSub,chl,SymToHostSub,size)
+#merge all data frames in list
+trait_master = df_list %>% reduce(full_join, by='sampleID')
+trait_master$pos=as.factor(trait_master$pos)
+trait_master$Zone=as.factor(trait_master$Zone)
+trait_master$agg=as.factor(trait_master$agg)
+trait_master$treatment=as.factor(trait_master$treatment)
+trait_master$tank=as.factor(trait_master$tank)
+trait_master$genet=as.factor(trait_master$genet)
+
+trait_master=trait_master[!is.na(trait_master$pos),] # remove extra samples not in expt
+
+# this worked but for some reason 4 entries for 12-I-3
+# 12-I-3 2 MQY values -- look at tank layout from last day (I think I just input sample name wrong?)
+# let's remove dups for 12-I-3 and replace MQY with NA
+trait_master=trait_master[-c(43,44,49),]
+trait_master[trait_master$sampleID=='12-I-3',9]<-NA
+
+#write.csv(trait_master,'trait_master.csv')
+
 
 #### normality ####
 trait=trait_master$MQY # set trait of interest here
@@ -41,6 +95,8 @@ trait_master$logWeight=log(trait_master$weight)
 
 
 ########## start here ##########
+setwd('/Users/maria/Desktop/Kenkel_lab/Anthopleura/Nov2020_AeleHeatStress/')
+
 trait_master=read.csv('trait_master.csv',row.names = 1)
 trait_master$agg=factor(trait_master$agg,levels=c('1','2','3','4','5','11','7','8','9','10','12','13'))
 trait_master$genet=factor(trait_master$genet,levels=c('G4','G5','G1','G10','G9','G12','G13'))
@@ -51,10 +107,10 @@ trait_master$treatment=as.factor(trait_master$treatment)
 trait_master$logSymHost=log(trait_master$SymHostRatio)
 trait_master$logWeight=log(trait_master$weight)
 
-#trait=trait_master$logSymHost
+trait=trait_master$logSymHost
 #trait=trait_master$logWeight # note for weight, treatment and tank not relevant bc only initial
 #trait=trait_master$Chla_norm
-trait=trait_master$MQY
+#trait=trait_master$MQY
 
 #### MIXED MODELS ####
 library(lme4)
@@ -87,30 +143,61 @@ rand(MixModel)
 anova(MixModel,ddf='Kenward-Roger')
 pairs(emmeans(MixModel,c('Zone','treatment')))
 pairs(emmeans(MixModel,'treatment'))
+pairs(emmeans(MixModel,'treatment'))
 emmeans(MixModel,c('Zone','treatment'))
 emmeans(MixModel,'treatment')
 
+#### MAIN MODELS ####
 # export tables
 MQY=lmer(MQY ~ treatment*Zone + pos + (1|genet) + (1|tank:treatment), data=trait_master)
+MQYres=anova(MQY,ddf='Kenward-Roger')
+MQYrand=as.data.frame(rand(MQY))
+
 SymHost=lmer(logSymHost ~ treatment*Zone + pos + (1|genet) + (1|tank:treatment), data=trait_master)
+SymHostRes=anova(SymHost,ddf='Kenward-Roger')
+SymHostRand=as.data.frame(rand(SymHost))
+
 Chla_norm=lmer(Chla_norm ~ treatment*Zone + pos + (1|genet) + (1|tank:treatment), data=trait_master)
-tab_model(MQY,SymHost,Chla_norm,show.df = TRUE)
+Chla_res=anova(Chla_norm,ddf='Kenward-Roger')
+Chla_rand=as.data.frame(rand(Chla_norm))
+
+tab_dfs(list(MQYres,MQYrand,SymHostRes,SymHostRand,Chla_res,Chla_rand),show.rownames = T,
+        titles=c('MQY','','logSymHost','','Chla_norm',''))
 
 # using continuous tidal height measurements
 trait_master$tidal_height=trait_master$actual.mid
 MQY=lmer(MQY ~ treatment*tidal_height + pos + (1|genet) + (1|tank:treatment), data=trait_master)
+MQYres=anova(MQY,ddf='Kenward-Roger')
+MQYrand=as.data.frame(rand(MQY))
+
 SymHost=lmer(logSymHost ~ treatment*tidal_height + pos + (1|genet) + (1|tank:treatment), data=trait_master)
+SymHostRes=anova(SymHost,ddf='Kenward-Roger')
+SymHostRand=as.data.frame(rand(SymHost))
+
 Chla_norm=lmer(Chla_norm ~ treatment*tidal_height + pos + (1|genet) + (1|tank:treatment), data=trait_master)
-tab_model(MQY,SymHost,Chla_norm,show.df = TRUE)
+Chla_res=anova(Chla_norm,ddf='Kenward-Roger')
+Chla_rand=as.data.frame(rand(Chla_norm))
+
+tab_dfs(list(MQYres,MQYrand,SymHostRes,SymHostRand,Chla_res,Chla_rand),show.rownames = T,
+        titles=c('MQY','','logSymHost','','Chla_norm',''))
 
 # binning aggregation 3 in high intertidal
 trait_master$Zone_v2=trait_master$Zone
 trait_master$Zone_v2[trait_master$agg=='3']='high'
 MQY=lmer(MQY ~ treatment*Zone_v2 + pos + (1|genet) + (1|tank:treatment), data=trait_master)
-SymHost=lmer(logSymHost ~ treatment*Zone_v2 + pos + (1|genet) + (1|tank:treatment), data=trait_master)
-Chla_norm=lmer(Chla_norm ~ treatment*Zone_v2 + pos + (1|genet) + (1|tank:treatment), data=trait_master)
-tab_model(MQY,SymHost,Chla_norm,show.df = TRUE)
+MQYres=anova(MQY,ddf='Kenward-Roger')
+MQYrand=as.data.frame(rand(MQY))
 
+SymHost=lmer(logSymHost ~ treatment*Zone_v2 + pos + (1|genet) + (1|tank:treatment), data=trait_master)
+SymHostRes=anova(SymHost,ddf='Kenward-Roger')
+SymHostRand=as.data.frame(rand(SymHost))
+
+Chla_norm=lmer(Chla_norm ~ treatment*Zone_v2 + pos + (1|genet) + (1|tank:treatment), data=trait_master)
+Chla_res=anova(Chla_norm,ddf='Kenward-Roger')
+Chla_rand=as.data.frame(rand(Chla_norm))
+
+tab_dfs(list(MQYres,MQYrand,SymHostRes,SymHostRand,Chla_res,Chla_rand),show.rownames = T,
+        titles=c('MQY','','logSymHost','','Chla_norm',''))
 
 ### Chl ####
 # treatment and genet sig (trait ~ treatment*Zone + pos + (1|genet) + (1|tank:treatment))
@@ -137,7 +224,7 @@ anova(ModelClean,ddf='Kenward-Roger')
 
 ####### does acclimation effect response to treatment within a genet #####
 
-Genet=trait_master[trait_master$genet=='G10',] #change to genet of interest
+Genet=trait_master[trait_master$genet=='G1',] #change to genet of interest
 trait=Genet$MQY #change to trait of interest
 #Genet=Genet[!is.na(trait),] #remove any NAs
 #trait=log(Genet$SymHostRatio) #change to trait of interest
@@ -200,21 +287,13 @@ write.csv(pMaster,'tables/Genet1_AggTrmt_pw.csv')
 
 # checking which genets differ
 library(emmeans)
-trait=trait_master$MQY
+trait=trait_master$logSymHost
 MixModel=lmer(trait ~ treatment*Zone + pos + genet + (1|tank:treatment), data=trait_master) # no treatment*genet effect for any traits
 anova(MixModel,ddf='Kenward-Roger')
 genets=emmeans(MixModel, 'genet')
 pw_df=as.data.frame(pairs(genets))
 # change file output
 write.csv(pw_df,'pw_MQY_by_genet.csv')
-
-### sym to host
-# G1 vs G12 p=0.0536
-# G1 vs G13 p=0.006
-
-### Chla_norm
-# G1 vs G10 p=0.0203
-# G1 vs G4 p=0.0713
 
 ggplot(trait_master,aes(x=genet,y=MQY,fill=treatment))+geom_boxplot()+theme_bw(base_size = 20)
 ggplot(trait_master,aes(x=genet,y=logSymHost,fill=treatment))+geom_boxplot()+theme_bw(base_size = 20)
@@ -226,23 +305,29 @@ ggplot(trait_master,aes(x=genet,y=Chla_norm,fill=treatment))+geom_boxplot()+them
 ###### by trait
 # color option 1 c('#EF6548','#4EB3D3')
 
-MQY=ggplot(trait_master[!is.na(trait_master$MQY),], aes(x=treatment,y=MQY,fill=Zone))+
-  geom_boxplot()+
+MQY=ggplot(trait_master[!is.na(trait_master$MQY),], aes(x=treatment,y=MQY,fill=Zone,group = interaction(Zone, treatment)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitterdodge())+
   scale_fill_manual(values=c("#BF812D","#80CDC1"))+
   theme_classic(base_size = 15)+
-  ylim(0.45,0.8) #extend the limits a bit so I can fit in pvals
-SymToHost=ggplot(trait_master[!is.na(trait_master$SymHostRatio),], aes(x=treatment,y=log(SymHostRatio),fill=Zone))+
-  geom_boxplot()+
+  scale_x_discrete(labels=c('Control','Heat'))
+  #ylim(0.45,0.8) #extend the limits a bit so I can fit in pvals
+SymToHost=ggplot(trait_master[!is.na(trait_master$SymHostRatio),], aes(x=treatment,y=log(SymHostRatio),fill=Zone,group = interaction(Zone, treatment)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitterdodge())+
   scale_fill_manual(values=c("#BF812D","#80CDC1"))+
   theme_classic(base_size = 15)+
   ylab('log(sym/host ratio)')+
-  ylim(-5,0)
-Chla=ggplot(trait_master[!is.na(trait_master$Chla_norm),], aes(x=treatment,y=Chla_norm,fill=Zone))+
-  geom_boxplot()+
+  #ylim(-5,0)+
+  scale_x_discrete(labels=c('Control','Heat'))
+Chla=ggplot(trait_master[!is.na(trait_master$Chla_norm),], aes(x=treatment,y=Chla_norm,fill=Zone,,group = interaction(Zone, treatment)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitterdodge())+
   scale_fill_manual(values=c("#BF812D","#80CDC1"))+
   theme_classic(base_size = 15)+
   ylab('ug Chla/mg protein')+
-  ylim(0,7)
+  #ylim(0,7)+
+  scale_x_discrete(labels=c('Control','Heat'))
 
 library(cowplot)
 legend=get_legend(Chla)
@@ -306,8 +391,17 @@ mod=summary(lm(logSymHost~MQY+Zone,trait_master))
 # (8 observations deleted due to missingness)
 # Multiple R-squared:  0.2696,	Adjusted R-squared:  0.2585 
 # F-statistic: 24.36 on 2 and 132 DF,  p-value: 9.908e-10
-tab_model(mod)
+tab_model(mod,show.df = T,show.stat = T)
 
+# to test whether zone has an effect on the relationship between MQY and sym to host cell ratios use ANCOVA
+library(rstatix)
+anova_test(formula=logSymHost~MQY+Zone,data=trait_master, type=3, detailed=T)
+# ANOVA Table (type III tests)
+# 
+#       Effect    SSn   SSd DFn DFd      F        p p<.05   ges
+# 1 (Intercept) 54.701 75.47   1 132 95.675 2.51e-17     * 0.420
+# 2         MQY 27.849 75.47   1 132 48.709 1.30e-10     * 0.270
+# 3        Zone  3.835 75.47   1 132  6.708 1.10e-02     * 0.048
 
 ###### by genet
 #trait_master$ChlSymRatio=trait_master$Chla_norm/trait_master$SymHostRatio
@@ -401,27 +495,56 @@ ggplot(trait_master,aes(x=agg,y=Chla_norm))+geom_boxplot()
 ggplot(trait_master,aes(x=agg,y=MQY))+geom_boxplot()
 ggplot(trait_master,aes(x=agg,y=logWeight))+geom_boxplot()+theme_bw(base_size = 20)+ylab('log(mg wet weight)')+xlab('aggregation')
 
+#### by genet ####
+ggplot(trait_master,aes(x=genet,y=logSymHost))+geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitter(0.2))+
+  theme_bw(base_size=20)+ylab('log(Sym/Host)')
+ggplot(trait_master,aes(x=genet,y=Chla_norm))+geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitter(0.2))+
+  theme_bw(base_size=20)+ylab('ug Chla/mg protein')
+ggplot(trait_master,aes(x=genet,y=MQY))+geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitter(0.2))+theme_bw(base_size=20)
+ggplot(trait_master,aes(x=genet,y=logWeight))+geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitter(0.2))+
+  ylab('log(mg wet weight)')+theme_bw(base_size=20)
+
+
+
 # plot of tide height aggregation limits
 melt=gather(TideHeight,'pos','height',3:5)
 ggplot(melt,aes(x=agg,y=height,color=zone))+geom_point()+geom_line()+theme_bw(base_size=20)+xlab('aggregation')+ylab('tidal height (m)')
 
+#plot tide height sampling points by zone
+ggplot(trait_master,aes(x=Zone,y=actual.mid,color=Zone))+geom_boxplot()+
+  theme_bw(base_size = 20)+ylab('mid-height (m)')+
+  scale_x_discrete(limits=c("low","high"))
+ggplot(trait_master,aes(x=Zone_v2,y=actual.mid,color=Zone_v2))+geom_boxplot()+
+  theme_classic(base_size = 20)+ylab('mid-height')+
+  scale_x_discrete(limits=c("low","high"))
+
 
 ##### position plots ####
-MQY=ggplot(trait_master[!is.na(trait_master$MQY),], aes(x=treatment,y=MQY,fill=pos))+
-  geom_boxplot()+
+MQY=ggplot(trait_master[!is.na(trait_master$MQY),], aes(x=treatment,y=MQY,fill=pos,group = interaction(pos, treatment)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitterdodge())+
   scale_fill_manual(values=c("#80CDC1","#BF812D"))+
   theme_classic(base_size = 15)+
+  scale_x_discrete(labels=c('Control','Heat'))+
   ylim(0.45,0.8) #extend the limits a bit so I can fit in pvals
-SymToHost=ggplot(trait_master[!is.na(trait_master$SymHostRatio),], aes(x=treatment,y=log(SymHostRatio),fill=pos))+
-  geom_boxplot()+
+SymToHost=ggplot(trait_master[!is.na(trait_master$SymHostRatio),], aes(x=treatment,y=log(SymHostRatio),fill=pos,group = interaction(pos, treatment)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15',position=position_jitterdodge())+
   scale_fill_manual(values=c("#80CDC1","#BF812D"))+
   theme_classic(base_size = 15)+
+  scale_x_discrete(labels=c('Control','Heat'))+
   ylab('log(sym/host ratio)')+
   ylim(-5,0)
-Chla=ggplot(trait_master[!is.na(trait_master$Chla_norm),], aes(x=treatment,y=Chla_norm,fill=pos))+
-  geom_boxplot()+
-  scale_fill_manual(values=c("#80CDC1","#BF812D"))+
+Chla=ggplot(trait_master[!is.na(trait_master$Chla_norm),], aes(x=treatment,y=Chla_norm,fill=pos,group = interaction(pos, treatment)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20,color='gray15', position=position_jitterdodge())+
+  scale_fill_manual(values=c("#80CDC1","#BF812D"),name = 'position',labels=c('Center', 'Edge'))+
   theme_classic(base_size = 15)+
+  scale_x_discrete(labels=c('Control','Heat'))+
   ylab('ug Chla/mg protein')+
   ylim(0,7)
 
@@ -439,12 +562,19 @@ grid.arrange(MQY+theme(legend.position = 'none')+xlab(''),
 ###### models for weight ######
 trait=trait_master$logWeight
 ggplot(trait_master,aes(x=genet,y=logWeight))+geom_boxplot()+theme_bw(base_size = 20)+ylab('log(mg wet weight)')
-ggplot(trait_master,aes(x=pos,y=logWeight))+geom_boxplot()+theme_bw(base_size = 20)+
+ggplot(trait_master,aes(x=pos,y=logWeight))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(shape=20, color='gray15', position=position_jitter(0.2))+
+  theme_bw(base_size = 20)+
   ylab('log(mg wet weight)')+xlab('position')+
   scale_x_discrete(labels=c('center','edge'))
 
+trait_master %>% group_by(pos) %>% summarise(mean=mean(weight),sd=sd(weight))
+# pos    mean    sd
+# 1 I     0.804 0.468
+# 2 O     0.432 0.242
+
 MixModel=lmer(trait ~ Zone + pos + (1|genet), data=trait_master)
-#MixModel=lm(trait ~ Zone + pos + genet, data=trait_master)
 
 # checking residuals
 qqPlot(residuals(MixModel))
@@ -452,11 +582,22 @@ plot(MixModel,which=1)
 # marginal R2 considers only the variance by the fixed effects, and the conditional R2 by both the fixed and random effects
 rsquared(MixModel)
 
-rand(MixModel)
-anova(MixModel,ddf='Kenward-Roger')
+rand=as.data.frame(rand(MixModel))
+res=anova(MixModel,ddf='Kenward-Roger')
 pairs(emmeans(MixModel,c('Zone','pos')))
-#pairs(emmeans(MixModel,'genet'))
-emmeans(MixModel,c('Zone','treatment'))
+
+# Type III Analysis of Variance Table with Kenward-Roger's method
+#       Sum Sq Mean Sq NumDF  DenDF F value    Pr(>F)    
+# Zone  0.9243  0.9243     1 133.05  4.1329   0.04405 *  
+# pos  14.3315 14.3315     1 134.04 64.0802 5.049e-13 ***
+
+tab_dfs(list(res,rand),show.rownames = T,titles=c('log(weight)',''))
+
+Model=lm(trait ~ Zone + pos + genet, data=trait_master)
+anova(Model)
+exp=pairs(emmeans(Model,'genet'))
+write.csv(exp,'tables/weight_by_genet_pw.csv')
+
 
 ##### broad sense heritability #####
 library(MCMCglmm)
@@ -568,3 +709,29 @@ ggplot(delMQYH2, aes(x=trait,y=mean)) +
   labs(y=expression(H^2),x=expression(MQY_initial))+
   theme(axis.title.x = element_blank())+
   ylim(0,1)
+
+#### subset controls and run models for baseline trait values ####
+control=trait_master[trait_master$treatment=='C',]
+control=droplevels(control)
+MQY=lmer(MQY ~ Zone + (1|genet) + (1|tank), data=control)
+SymHost=lmer(logSymHost ~ Zone + (1|tank), data=control[!is.na(control$logSymHost),]) # with genet is singular
+Chla_norm=lmer(Chla_norm ~ Zone + (1|genet) + (1|tank), data=control)
+tab_model(MQY,SymHost,Chla_norm,show.df = TRUE)
+
+####### genet x treatment #######
+MQY=lmer(MQY ~ treatment*genet + Zone + pos + (1|tank:treatment), data=trait_master)
+MQYres=anova(MQY,ddf='Kenward-Roger')
+MQYrand=as.data.frame(rand(MQY))
+
+SymHost=lmer(logSymHost ~ treatment*genet + Zone + pos + (1|tank:treatment), data=trait_master)
+SymHostRes=anova(SymHost,ddf='Kenward-Roger')
+SymHostRand=as.data.frame(rand(SymHost))
+
+Chla_norm=lmer(Chla_norm ~ treatment*genet + Zone + pos + (1|tank:treatment), data=trait_master)
+Chla_res=anova(Chla_norm,ddf='Kenward-Roger')
+Chla_rand=as.data.frame(rand(Chla_norm))
+
+tab_dfs(list(MQYres,MQYrand,SymHostRes,SymHostRand,Chla_res,Chla_rand),show.rownames = T,
+        titles=c('MQY','','logSymHost','','Chla_norm',''))
+
+
